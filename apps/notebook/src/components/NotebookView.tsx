@@ -18,6 +18,7 @@ import {
 import { CSS as DndCSS } from "@dnd-kit/utilities";
 import { Code2, Plus, RotateCcw, Trash2, X } from "lucide-react";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { subscribeToPeerFocus } from "../lib/cursor-registry";
 import { Button } from "@/components/ui/button";
 import type { Runtime } from "@/hooks/useSyncedSettings";
 import { ErrorBoundary } from "@/lib/error-boundary";
@@ -500,6 +501,18 @@ function NotebookViewContent({
       cellEl.scrollIntoView({ block: "nearest", behavior: "smooth" });
     }
   }, [searchCurrentMatch]);
+
+  // Scroll to the cell when a remote peer focuses it
+  useEffect(() => {
+    return subscribeToPeerFocus((cellId) => {
+      const cellEl = containerRef.current?.querySelector(
+        `[data-cell-id="${CSS.escape(cellId)}"]`,
+      );
+      if (cellEl) {
+        cellEl.scrollIntoView({ block: "nearest", behavior: "smooth" });
+      }
+    });
+  }, []);
 
   // ── Auto-seed first cell for empty notebooks ───────────────────────
   // For new notebooks the daemon creates zero cells. Once sync completes

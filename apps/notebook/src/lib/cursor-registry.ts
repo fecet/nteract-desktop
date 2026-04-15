@@ -257,6 +257,12 @@ function handlePresence(payload: unknown): void {
         }
         peer.focus = data;
         affectedCells.add(data.cell_id);
+        // Only follow focus from mirari (Neovim-driven), not web peers
+        if (msg.peer_label === "mirari") {
+          for (const cb of peerFocusSubscribers) {
+            cb(data.cell_id);
+          }
+        }
       }
 
       peers.set(msg.peer_id, peer);
@@ -451,6 +457,22 @@ export function subscribeToCell(
     if (subs?.size === 0) {
       cellSubscribers.delete(cellId);
     }
+  };
+}
+
+/**
+ * Subscribe to remote peer focus changes (cell-level, not cursor-level).
+ * Callback receives the cell_id that a remote peer just focused.
+ * Returns an unsubscribe function.
+ */
+const peerFocusSubscribers = new Set<(cellId: string) => void>();
+
+export function subscribeToPeerFocus(
+  callback: (cellId: string) => void,
+): () => void {
+  peerFocusSubscribers.add(callback);
+  return () => {
+    peerFocusSubscribers.delete(callback);
   };
 }
 
