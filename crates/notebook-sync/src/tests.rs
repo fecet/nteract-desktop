@@ -925,6 +925,7 @@ mod integration_tests {
                 kernel_type: "python".into(),
                 env_source: "auto".into(),
                 notebook_path: None,
+                connection_file: None,
             })
             .await
             .expect("launch kernel");

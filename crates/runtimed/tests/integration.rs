@@ -421,7 +421,7 @@ async fn test_notebook_sync_via_unified_socket() {
     assert!(wait_for_daemon(&pool_client, Duration::from_secs(5)).await);
 
     // Create first notebook via connect_create — should get empty notebook
-    let result1 = connect::connect_create(socket_path.clone(), "python", None, "test", false)
+    let result1 = connect::connect_create(socket_path.clone(), "python", None, None, "test", false)
         .await
         .expect("client1 should connect");
     let notebook_id_1 = result1.info.notebook_id.clone();
@@ -453,7 +453,7 @@ async fn test_notebook_sync_via_unified_socket() {
     assert_eq!(cells[0].cell_type, "code");
 
     // Create a different notebook — should be independent
-    let client3 = connect::connect_create(socket_path.clone(), "python", None, "test", false)
+    let client3 = connect::connect_create(socket_path.clone(), "python", None, None, "test", false)
         .await
         .expect("client3 should connect")
         .handle;
@@ -481,7 +481,7 @@ async fn test_notebook_sync_cross_window_propagation() {
     assert!(wait_for_daemon(&pool_client, Duration::from_secs(5)).await);
 
     // First client creates a notebook; second client joins it
-    let result = connect::connect_create(socket_path.clone(), "python", None, "test", false)
+    let result = connect::connect_create(socket_path.clone(), "python", None, None, "test", false)
         .await
         .unwrap();
     let notebook_id = result.info.notebook_id.clone();
@@ -551,7 +551,7 @@ async fn test_untitled_notebook_persists_through_eviction() {
     // Phase 1: Two clients connect, add cells, then both disconnect
     let notebook_id;
     {
-        let result = connect::connect_create(socket_path.clone(), "python", None, "test", false)
+        let result = connect::connect_create(socket_path.clone(), "python", None, None, "test", false)
             .await
             .unwrap();
         notebook_id = result.info.notebook_id.clone();
@@ -672,9 +672,16 @@ async fn test_eviction_flushes_before_reconnect() {
     // the `.automerge` debouncer is the only thing keeping content durable.
     let notebook_id;
     {
-        let result = connect::connect_create(socket_path.clone(), "python", None, "test", false)
-            .await
-            .unwrap();
+        let result = connect::connect_create(
+            socket_path.clone(),
+            "python",
+            None,
+            None,
+            "test",
+            false,
+        )
+        .await
+        .unwrap();
         notebook_id = result.info.notebook_id.clone();
         let client = result.handle;
 
@@ -742,7 +749,7 @@ async fn test_notebook_cell_delete_propagation() {
     assert!(wait_for_daemon(&pool_client, Duration::from_secs(5)).await);
 
     // Client1 creates a notebook with three cells
-    let result = connect::connect_create(socket_path.clone(), "python", None, "test", false)
+    let result = connect::connect_create(socket_path.clone(), "python", None, None, "test", false)
         .await
         .unwrap();
     let notebook_id = result.info.notebook_id.clone();
@@ -841,9 +848,9 @@ async fn test_multiple_notebooks_concurrent_isolation() {
 
     // Create three notebooks concurrently via connect_create
     let (nb_a, nb_b, nb_c) = tokio::join!(
-        connect::connect_create(socket_path.clone(), "python", None, "test", false),
-        connect::connect_create(socket_path.clone(), "python", None, "test", false),
-        connect::connect_create(socket_path.clone(), "python", None, "test", false),
+        connect::connect_create(socket_path.clone(), "python", None, None, "test", false),
+        connect::connect_create(socket_path.clone(), "python", None, None, "test", false),
+        connect::connect_create(socket_path.clone(), "python", None, None, "test", false),
     );
     let nb_a = nb_a.unwrap();
     let nb_b = nb_b.unwrap();
@@ -969,7 +976,7 @@ async fn test_streaming_load_via_open_notebook() {
     );
 
     // Open via OpenNotebook handshake — triggers streaming load
-    let result = connect::connect_open(socket_path.clone(), nb_path.clone(), "test")
+    let result = connect::connect_open(socket_path.clone(), nb_path.clone(), "test", None)
         .await
         .expect("should connect and open notebook");
     let handle = result.handle;
@@ -1078,7 +1085,7 @@ async fn test_streaming_load_second_client_joins() {
     );
 
     // First client opens — triggers streaming load
-    let result1 = connect::connect_open(socket_path.clone(), nb_path.clone(), "test")
+    let result1 = connect::connect_open(socket_path.clone(), nb_path.clone(), "test", None)
         .await
         .expect("client1 should connect");
     let handle1 = result1.handle;
@@ -1095,7 +1102,7 @@ async fn test_streaming_load_second_client_joins() {
     );
 
     // Second client opens the same file — should join the existing room
-    let result2 = connect::connect_open(socket_path.clone(), nb_path.clone(), "test")
+    let result2 = connect::connect_open(socket_path.clone(), nb_path.clone(), "test", None)
         .await
         .expect("client2 should connect");
     let handle2 = result2.handle;

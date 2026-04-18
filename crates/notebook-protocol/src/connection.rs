@@ -110,6 +110,12 @@ pub enum Handshake {
     OpenNotebook {
         /// Path to the .ipynb file.
         path: String,
+        /// Path to an externally-managed Jupyter connection file. When set,
+        /// the daemon attaches to the pre-running kernel instead of spawning
+        /// one, and skips the auto-launch that normally fires on first peer
+        /// connect. The client is expected to own the kernel process.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        attach_connection_file: Option<String>,
     },
 
     /// Runtime agent handshake. Sent by the coordinator to a spawned runtime
@@ -693,6 +699,7 @@ mod tests {
         // OpenNotebook
         let json = serde_json::to_string(&Handshake::OpenNotebook {
             path: "/home/user/notebook.ipynb".into(),
+            attach_connection_file: None,
         })
         .unwrap();
         assert_eq!(

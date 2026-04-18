@@ -409,11 +409,13 @@ class NativeAsyncClient:
         self,
         path: str,
         peer_label: str | None = None,
+        attach_connection_file: str | None = None,
     ) -> Coroutine[Any, Any, AsyncSession]: ...
     def create_notebook(
         self,
         runtime: str = "python",
         working_dir: str | None = None,
+        notebook_id: str | None = None,
         peer_label: str | None = None,
     ) -> Coroutine[Any, Any, AsyncSession]: ...
     def join_notebook(
@@ -446,6 +448,7 @@ class AsyncSession:
         kernel_type: str = "python",
         env_source: str = "auto",
         notebook_path: str | None = None,
+        connection_file: str | None = None,
     ) -> Coroutine[Any, Any, None]: ...
     def shutdown_kernel(self) -> Coroutine[Any, Any, None]: ...
     def restart_kernel(self, wait_for_ready: bool = True) -> Coroutine[Any, Any, list[str]]: ...

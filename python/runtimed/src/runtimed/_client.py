@@ -34,26 +34,47 @@ class Client:
         raw = await self._native.list_active_notebooks()
         return [NotebookInfo._from_dict(d) for d in raw]
 
-    async def open_notebook(self, path: str, peer_label: str | None = None) -> Notebook:
-        """Open an existing notebook file and return a connected Notebook."""
-        session = await self._native.open_notebook(path, peer_label)
+    async def open_notebook(
+        self,
+        path: str,
+        peer_label: str | None = None,
+        attach_connection_file: str | None = None,
+    ) -> Notebook:
+        """Open an existing notebook file and return a connected Notebook.
+
+        When ``attach_connection_file`` is supplied, the daemon skips its
+        usual auto-launch and attaches to the pre-running Jupyter kernel
+        described by that connection file (env_source="external"). The
+        caller owns the kernel process lifetime.
+        """
+        session = await self._native.open_notebook(
+            path, peer_label, attach_connection_file
+        )
         return Notebook(session)
 
     async def create_notebook(
         self,
         runtime: str = "python",
         working_dir: str | None = None,
+        notebook_id: str | None = None,
         peer_label: str | None = None,
         dependencies: list[str] | None = None,
     ) -> Notebook:
         """Create a new notebook and return a connected Notebook.
+
+        If *notebook_id* is provided it is used as a stable ID hint: if the
+        daemon has a persisted Automerge doc for this ID, the room is reused
+        (recovering prior cell state); otherwise a new notebook is created
+        using this ID.
 
         If *dependencies* are provided they are written to the notebook
         metadata in a single bulk operation.  The environment is **not**
         synced automatically — call ``sync_environment()`` or ``restart()``
         on the returned notebook to apply them.
         """
-        session = await self._native.create_notebook(runtime, working_dir, peer_label)
+        session = await self._native.create_notebook(
+            runtime, working_dir, notebook_id, peer_label
+        )
         notebook = Notebook(session)
         if dependencies:
             await notebook.add_dependencies(dependencies)

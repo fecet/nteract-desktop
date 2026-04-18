@@ -286,6 +286,7 @@ pub async fn open_notebook(
             server.socket_path.clone(),
             abs_path.clone(),
             &server.get_peer_label().await,
+            None,
         )
         .await
         {
@@ -421,6 +422,7 @@ pub async fn create_notebook(
         server.socket_path.clone(),
         runtime,
         working_dir,
+        None,
         &server.get_peer_label().await,
         ephemeral,
     )
@@ -518,6 +520,7 @@ pub async fn create_notebook(
                             kernel_type: runtime.to_string(),
                             env_source: scoped_env_source.to_string(),
                             notebook_path: None,
+                            connection_file: None,
                         })
                         .await;
 

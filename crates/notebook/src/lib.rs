@@ -2111,6 +2111,7 @@ async fn save_notebook_as(
                             kernel_type: "auto".to_string(),
                             env_source: "auto".to_string(),
                             notebook_path: Some(saved_path_str),
+                            connection_file: None,
                         })
                         .await
                     {

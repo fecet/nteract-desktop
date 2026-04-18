@@ -476,6 +476,7 @@ mod tests {
             kernel_type: "python".into(),
             env_source: "uv:prewarmed".into(),
             notebook_path: Some("/tmp/test.ipynb".into()),
+            connection_file: None,
         };
         let json = serde_json::to_string(&req).unwrap();
         assert!(json.contains("launch_kernel"));

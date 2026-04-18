@@ -165,18 +165,23 @@ impl AsyncClient {
     /// Args:
     ///     path: Path to the .ipynb file.
     ///     peer_label: Optional label override (defaults to client's peer_label).
-    #[pyo3(signature = (path, peer_label=None))]
+    ///     attach_connection_file: Optional path to an externally-managed
+    ///         Jupyter connection file. When set, the daemon skips auto-launch
+    ///         and attaches to the pre-running kernel described by the file.
+    #[pyo3(signature = (path, peer_label=None, attach_connection_file=None))]
     fn open_notebook<'py>(
         &self,
         py: Python<'py>,
         path: &str,
         peer_label: Option<String>,
+        attach_connection_file: Option<String>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let label = peer_label.or_else(|| self.peer_label.clone());
         let socket_path = self.socket_path.clone();
         let path = path.to_string();
         future_into_py(py, async move {
-            AsyncSession::open_notebook_async(socket_path, path, label).await
+            AsyncSession::open_notebook_async(socket_path, path, label, attach_connection_file)
+                .await
         })
     }
 
@@ -185,13 +190,17 @@ impl AsyncClient {
     /// Args:
     ///     runtime: Kernel runtime type (default: "python").
     ///     working_dir: Optional working directory for environment detection.
+    ///     notebook_id: Optional stable ID hint. If the daemon has a persisted
+    ///         Automerge doc for this ID, the room is reused; otherwise a new
+    ///         notebook is created using this ID.
     ///     peer_label: Optional label override (defaults to client's peer_label).
-    #[pyo3(signature = (runtime="python", working_dir=None, peer_label=None))]
+    #[pyo3(signature = (runtime="python", working_dir=None, notebook_id=None, peer_label=None))]
     fn create_notebook<'py>(
         &self,
         py: Python<'py>,
         runtime: &str,
         working_dir: Option<&str>,
+        notebook_id: Option<String>,
         peer_label: Option<String>,
     ) -> PyResult<Bound<'py, PyAny>> {
         // Validate working_dir if provided
@@ -216,7 +225,14 @@ impl AsyncClient {
         let runtime = runtime.to_string();
         let working_dir_buf = working_dir.map(PathBuf::from);
         future_into_py(py, async move {
-            AsyncSession::create_notebook_async(socket_path, runtime, working_dir_buf, label).await
+            AsyncSession::create_notebook_async(
+                socket_path,
+                runtime,
+                working_dir_buf,
+                notebook_id,
+                label,
+            )
+            .await
         })
     }
 

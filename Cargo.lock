@@ -6894,6 +6894,8 @@ dependencies = [
  "kernel-env",
  "libc",
  "notebook-doc",
+ "notebook-protocol",
+ "notebook-sync",
  "notify",
  "petname",
  "rmcp",

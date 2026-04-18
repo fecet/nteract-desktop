@@ -155,18 +155,63 @@ impl KernelConnection for JupyterKernel {
         let bootstrap_dx = launched_config.feature_flags.bootstrap_dx;
         let env_path = env.as_ref().map(|e| e.venv_path.clone());
 
-        // ── Build process command ────────────────────────────────────────
+        // ── Resolve connection info + (maybe) spawn kernel process ────────
+        //
+        // env_source == "external" attaches to a pre-running kernel described
+        // by launched_config.connection_file; daemon does not own the process.
+        // All other env_sources fall through to the existing spawn flow.
+        #[allow(clippy::type_complexity)]
+        let (connection_info, connection_file_path, kernel_id, mut process): (
+            ConnectionInfo,
+            PathBuf,
+            String,
+            Option<tokio::process::Child>,
+        ) = if env_source == "external" {
+            let user_conn = launched_config
+                .connection_file
+                .as_ref()
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "env_source=\"external\" requires launched_config.connection_file",
+                    )
+                })?
+                .clone();
+            let content = tokio::fs::read(&user_conn).await.map_err(|e| {
+                anyhow::anyhow!(
+                    "failed to read external connection file {}: {}",
+                    user_conn.display(),
+                    e,
+                )
+            })?;
+            let info: ConnectionInfo = serde_json::from_slice(&content).map_err(|e| {
+                anyhow::anyhow!(
+                    "failed to parse external connection file {}: {}",
+                    user_conn.display(),
+                    e,
+                )
+            })?;
+            let kid = user_conn
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .map(String::from)
+                .unwrap_or_else(|| Uuid::new_v4().to_string());
+            info!(
+                "[jupyter-kernel] Attaching to external kernel (connection: {}, kernel_id={})",
+                user_conn.display(),
+                kid,
+            );
+            (info, user_conn, kid, None)
+        } else {
+            // Determine kernel name for connection info
+            let kernelspec_name = match kernel_type.as_str() {
+                "python" => "python3",
+                "deno" => "deno",
+                _ => &kernel_type,
+            };
 
-        // Determine kernel name for connection info
-        let kernelspec_name = match kernel_type.as_str() {
-            "python" => "python3",
-            "deno" => "deno",
-            _ => &kernel_type,
-        };
-
-        // Reserve ports — hold listeners until after spawn() to prevent TOCTOU races
-        let ip = std::net::IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
-        let (ports, listeners) = runtimelib::peek_ports_with_listeners(ip, 5).await?;
+            // Reserve ports — hold listeners until after spawn() to prevent TOCTOU races
+            let ip = std::net::IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
+            let (ports, listeners) = runtimelib::peek_ports_with_listeners(ip, 5).await?;
 
         let connection_info = ConnectionInfo {
             transport: jupyter_protocol::connection_info::Transport::TCP,
@@ -564,65 +609,72 @@ impl KernelConnection for JupyterKernel {
             cmd.env(key, value);
         }
 
-        // Signal dx bootstrap to the launcher module inside the kernel process.
-        // The nteract_kernel_launcher reads RUNT_BOOTSTRAP_DX to decide whether
-        // to append `import dx; dx.install()` to ipykernel's exec_lines.
-        if bootstrap_dx {
-            cmd.env("RUNT_BOOTSTRAP_DX", "1");
-        }
+            // Signal dx bootstrap to the launcher module inside the kernel process.
+            // The nteract_kernel_launcher reads RUNT_BOOTSTRAP_DX to decide whether
+            // to append `import dx; dx.install()` to ipykernel's exec_lines.
+            if bootstrap_dx {
+                cmd.env("RUNT_BOOTSTRAP_DX", "1");
+            }
 
-        let mut process = cmd.kill_on_drop(true).spawn()?;
-        drop(listeners);
+            let process = cmd.kill_on_drop(true).spawn()?;
+            drop(listeners);
 
-        // Capture kernel stderr for diagnostics
-        if let Some(stderr) = process.stderr.take() {
-            let kid = kernel_id.clone();
-            spawn_best_effort("kernel-stderr", async move {
-                use tokio::io::{AsyncBufReadExt, BufReader};
-                let mut lines = BufReader::new(stderr).lines();
-                while let Ok(Some(line)) = lines.next_line().await {
-                    let lower = line.to_ascii_lowercase();
-                    if lower.contains("error") || lower.contains("traceback") {
-                        warn!("[kernel-stderr:{}] {}", kid, line);
-                    } else {
-                        debug!("[kernel-stderr:{}] {}", kid, line);
+            (connection_info, connection_file_path, kernel_id, Some(process))
+        };
+
+        // Capture kernel stderr for diagnostics (spawn mode only)
+        if let Some(p) = &mut process {
+            if let Some(stderr) = p.stderr.take() {
+                let kid = kernel_id.clone();
+                spawn_best_effort("kernel-stderr", async move {
+                    use tokio::io::{AsyncBufReadExt, BufReader};
+                    let mut lines = BufReader::new(stderr).lines();
+                    while let Ok(Some(line)) = lines.next_line().await {
+                        let lower = line.to_ascii_lowercase();
+                        if lower.contains("error") || lower.contains("traceback") {
+                            warn!("[kernel-stderr:{}] {}", kid, line);
+                        } else {
+                            debug!("[kernel-stderr:{}] {}", kid, line);
+                        }
                     }
-                }
-            });
+                });
+            }
         }
 
         #[cfg(unix)]
-        let kernel_pid = process.id().map(|pid| pid as i32);
+        let kernel_pid = process
+            .as_ref()
+            .and_then(|p| p.id().map(|pid| pid as i32));
 
         info!(
-            "[jupyter-kernel] Spawned kernel process (pid={:?}, kernel_id={})",
-            process.id(),
-            kernel_id
+            "[jupyter-kernel] Kernel ready (pid={:?}, kernel_id={})",
+            process.as_ref().and_then(|p| p.id()),
+            kernel_id,
         );
 
-        // Small delay to let the kernel start
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        // Spawn mode: give the freshly-started kernel a moment then check for
+        // early crashes. External mode skips this — the kernel is already up.
+        if let Some(p) = &mut process {
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
-        // Early crash detection: check if process exited during startup
-        match process.try_wait() {
-            Ok(Some(exit_status)) => {
-                error!(
-                    "[jupyter-kernel] Kernel process exited immediately: {} (kernel_id={})",
-                    exit_status, kernel_id
-                );
-                return Err(anyhow::anyhow!(
-                    "Kernel process exited immediately: {}",
-                    exit_status
-                ));
-            }
-            Ok(None) => {
-                // Process still running — good
-            }
-            Err(e) => {
-                warn!(
-                    "[jupyter-kernel] Could not check kernel process status: {}",
-                    e
-                );
+            match p.try_wait() {
+                Ok(Some(exit_status)) => {
+                    error!(
+                        "[jupyter-kernel] Kernel process exited immediately: {} (kernel_id={})",
+                        exit_status, kernel_id
+                    );
+                    return Err(anyhow::anyhow!(
+                        "Kernel process exited immediately: {}",
+                        exit_status
+                    ));
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    warn!(
+                        "[jupyter-kernel] Could not check kernel process status: {}",
+                        e
+                    );
+                }
             }
         }
 
@@ -648,31 +700,41 @@ impl KernelConnection for JupyterKernel {
         let pending_completions: PendingCompletions = Arc::new(StdMutex::new(HashMap::new()));
         let stream_terminals = Arc::new(tokio::sync::Mutex::new(StreamTerminals::new()));
 
-        // Spawn process watcher — detects process exit and signals via oneshot
-        let process_cmd_tx = cmd_tx.clone();
-        let panic_cmd_tx = cmd_tx.clone();
+        // Process watcher — detects process exit and signals via oneshot.
+        // External mode owns no process, so the watcher is absent; kernel
+        // death is surfaced through the heartbeat task instead.
         let (died_tx, died_rx) = tokio::sync::oneshot::channel::<String>();
-        let process_watcher_task = spawn_supervised(
-            "process-watcher",
-            async move {
-                let status = process.wait().await;
-                let msg = match status {
-                    Ok(exit_status) => {
-                        warn!("[jupyter-kernel] Kernel process exited: {}", exit_status);
-                        format!("Kernel process exited: {}", exit_status)
-                    }
-                    Err(e) => {
-                        error!("[jupyter-kernel] Error waiting for kernel process: {}", e);
-                        format!("Error waiting for kernel process: {}", e)
-                    }
-                };
-                let _ = died_tx.send(msg);
-                let _ = process_cmd_tx.try_send(QueueCommand::KernelDied);
-            },
-            move |_| {
-                let _ = panic_cmd_tx.try_send(QueueCommand::KernelDied);
-            },
-        );
+        let process_watcher_task: Option<JoinHandle<()>> = if let Some(mut p) = process {
+            let process_cmd_tx = cmd_tx.clone();
+            let panic_cmd_tx = cmd_tx.clone();
+            Some(spawn_supervised(
+                "process-watcher",
+                async move {
+                    let status = p.wait().await;
+                    let msg = match status {
+                        Ok(exit_status) => {
+                            warn!("[jupyter-kernel] Kernel process exited: {}", exit_status);
+                            format!("Kernel process exited: {}", exit_status)
+                        }
+                        Err(e) => {
+                            error!("[jupyter-kernel] Error waiting for kernel process: {}", e);
+                            format!("Error waiting for kernel process: {}", e)
+                        }
+                    };
+                    let _ = died_tx.send(msg);
+                    let _ = process_cmd_tx.try_send(QueueCommand::KernelDied);
+                },
+                move |_| {
+                    let _ = panic_cmd_tx.try_send(QueueCommand::KernelDied);
+                },
+            ))
+        } else {
+            // External mode: daemon does not own the kernel process.
+            // Leak died_tx so died_rx stays pending forever — kernel death
+            // is reported via the heartbeat task instead.
+            std::mem::forget(died_tx);
+            None
+        };
 
         // ── IOPub listener task ──────────────────────────────────────────
 
@@ -1770,8 +1832,10 @@ impl KernelConnection for JupyterKernel {
             }
             Err(e) => {
                 error!("[jupyter-kernel] {}", e);
-                // Abort process watcher to clean up orphaned kernel
-                process_watcher_task.abort();
+                // Abort process watcher (if any) to clean up orphaned kernel
+                if let Some(ref task) = process_watcher_task {
+                    task.abort();
+                }
                 return Err(e);
             }
         }
@@ -2114,7 +2178,7 @@ impl KernelConnection for JupyterKernel {
             kernel_pid,
             iopub_task: Some(iopub_task),
             shell_reader_task: Some(shell_reader_task),
-            process_watcher_task: Some(process_watcher_task),
+            process_watcher_task,
             heartbeat_task: Some(heartbeat_task),
             comm_coalesce_tx: Some(coalesce_tx),
             comm_coalesce_task: Some(comm_coalesce_task),

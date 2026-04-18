@@ -130,6 +130,7 @@ pub async fn restart_kernel(
             kernel_type: kernel_type.clone(),
             env_source: env_source.clone(),
             notebook_path: notebook_path.clone(),
+            connection_file: None,
         })
         .await;
 
@@ -149,6 +150,7 @@ pub async fn restart_kernel(
                             kernel_type: kernel_type.clone(),
                             env_source: env_source.clone(),
                             notebook_path,
+                            connection_file: None,
                         })
                         .await
                 }

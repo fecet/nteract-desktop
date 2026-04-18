@@ -213,6 +213,24 @@ enum Commands {
         /// Path to the notebook file, or notebook ID (UUID) for untitled notebooks
         path: PathBuf,
     },
+    /// Launch a kernel for a notebook (creates the room if absent).
+    ///
+    /// With --env-source=external the daemon attaches to a pre-running
+    /// kernel described by --connection-file instead of spawning one.
+    Launch {
+        /// Path to the notebook file. Created with an empty room if new.
+        path: PathBuf,
+        /// Kernel type to start.
+        #[arg(long, default_value = "python")]
+        kernel: String,
+        /// Environment source (auto, pixi:toml, uv:pyproject, external, ...).
+        #[arg(long, default_value = "auto")]
+        env_source: String,
+        /// Externally-managed Jupyter connection file. Required when
+        /// --env-source=external.
+        #[arg(long)]
+        connection_file: Option<PathBuf>,
+    },
 
     // =========================================================================
     // Top-level convenience aliases
@@ -623,6 +641,14 @@ async fn async_main(command: Option<Commands>) -> Result<()> {
         Some(Commands::Daemon { command }) => daemon_command(command).await?,
         Some(Commands::Ps { json }) => list_notebooks(json).await?,
         Some(Commands::Stop { path }) => shutdown_notebook(&path).await?,
+        Some(Commands::Launch {
+            path,
+            kernel,
+            env_source,
+            connection_file,
+        }) => {
+            launch_notebook_kernel(&path, &kernel, &env_source, connection_file.as_deref()).await?
+        }
         Some(Commands::Recover { path, output, list }) => {
             recover_notebook(path.as_deref(), output.as_deref(), list)?
         }
@@ -5014,6 +5040,78 @@ async fn shutdown_notebook(path: &PathBuf) -> Result<()> {
             eprintln!("Failed to shutdown notebook: {}", e);
             eprintln!("Is the daemon running? Try 'runt daemon status'");
             std::process::exit(1)
+        }
+    }
+
+    Ok(())
+}
+
+async fn launch_notebook_kernel(
+    path: &Path,
+    kernel: &str,
+    env_source: &str,
+    connection_file: Option<&Path>,
+) -> Result<()> {
+    use notebook_protocol::protocol::{NotebookRequest, NotebookResponse};
+
+    if env_source == "external" && connection_file.is_none() {
+        eprintln!("--env-source=external requires --connection-file");
+        std::process::exit(2);
+    }
+
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()?.join(path)
+    };
+
+    let socket_path = runt_workspace::default_socket_path();
+    let actor_label = format!("runt-cli:launch:{}", &Uuid::new_v4().to_string()[..8]);
+
+    let result = notebook_sync::connect::connect_open(
+        socket_path,
+        absolute.clone(),
+        &actor_label,
+        connection_file.map(|p| p.to_string_lossy().into_owned()),
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("connect_open failed: {}", e))?;
+
+    println!("notebook_id: {}", result.info.notebook_id);
+
+    let response = result
+        .handle
+        .send_request(NotebookRequest::LaunchKernel {
+            kernel_type: kernel.to_string(),
+            env_source: env_source.to_string(),
+            notebook_path: Some(absolute.to_string_lossy().to_string()),
+            connection_file: connection_file.map(|p| p.to_string_lossy().to_string()),
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("LaunchKernel failed: {}", e))?;
+
+    match response {
+        NotebookResponse::KernelLaunched {
+            kernel_type: kt,
+            env_source: es,
+            ..
+        } => {
+            println!("kernel launched: {} (env_source={})", kt, es);
+        }
+        NotebookResponse::KernelAlreadyRunning {
+            kernel_type: kt,
+            env_source: es,
+            ..
+        } => {
+            println!("kernel already running: {} (env_source={})", kt, es);
+        }
+        NotebookResponse::Error { error, .. } => {
+            eprintln!("LaunchKernel error: {}", error);
+            std::process::exit(1);
+        }
+        other => {
+            eprintln!("unexpected response: {:?}", other);
+            std::process::exit(1);
         }
     }
 

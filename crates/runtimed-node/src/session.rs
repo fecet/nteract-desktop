@@ -274,6 +274,7 @@ pub async fn create_notebook(options: Option<CreateNotebookOptions>) -> Result<S
         socket_path.clone(),
         &runtime,
         working_dir.clone(),
+        None,
         &actor_label,
         /* ephemeral */ false,
     )
@@ -411,6 +412,7 @@ async fn ensure_kernel_started(state: &Arc<Mutex<SessionState>>) -> Result<()> {
             kernel_type: runtime.clone(),
             env_source: "auto".to_string(),
             notebook_path,
+            connection_file: None,
         })
         .await
         .map_err(to_napi_err)?;

@@ -100,6 +100,7 @@ async fn main() -> anyhow::Result<()> {
         kernel_type: "python".to_string(),
         env_source: "auto".to_string(),
         notebook_path: Some(notebook_path.to_string_lossy().to_string()),
+        connection_file: None,
     };
 
     let response = handle.send_request(request).await;

@@ -262,6 +262,7 @@ pub(crate) async fn connect_open(
     socket_path: PathBuf,
     path: &str,
     actor_label: Option<&str>,
+    attach_connection_file: Option<String>,
 ) -> PyResult<(String, SessionState, NotebookConnectionInfo)> {
     let default_label;
     let label = match actor_label {
@@ -271,10 +272,14 @@ pub(crate) async fn connect_open(
             &default_label
         }
     };
-    let result =
-        notebook_sync::connect::connect_open(socket_path.clone(), PathBuf::from(path), label)
-            .await
-            .map_err(to_py_err)?;
+    let result = notebook_sync::connect::connect_open(
+        socket_path.clone(),
+        PathBuf::from(path),
+        label,
+        attach_connection_file,
+    )
+    .await
+    .map_err(to_py_err)?;
 
     let notebook_id = result.info.notebook_id.clone();
     let (blob_base_url, blob_store_path) = resolve_blob_paths(&socket_path).await;
@@ -325,6 +330,7 @@ pub(crate) async fn connect_create(
     socket_path: PathBuf,
     runtime: &str,
     working_dir: Option<PathBuf>,
+    notebook_id: Option<String>,
     actor_label: Option<&str>,
 ) -> PyResult<(String, SessionState, NotebookConnectionInfo)> {
     let default_label;
@@ -339,6 +345,7 @@ pub(crate) async fn connect_create(
         socket_path.clone(),
         runtime,
         working_dir.clone(),
+        notebook_id,
         label,
         false,
     )
@@ -383,6 +390,7 @@ pub(crate) async fn start_kernel(
     kernel_type: &str,
     env_source: &str,
     notebook_path: Option<&str>,
+    connection_file: Option<&str>,
 ) -> PyResult<()> {
     let mut st = state.lock().await;
 
@@ -401,6 +409,7 @@ pub(crate) async fn start_kernel(
             kernel_type: kernel_type.to_string(),
             env_source: env_source.to_string(),
             notebook_path: resolved_path,
+            connection_file: connection_file.map(|p| p.to_string()),
         })
         .await
         .map_err(to_py_err)?;
@@ -544,6 +553,7 @@ pub(crate) async fn restart_kernel(
         kernel_type: restart_kernel_type,
         env_source: restart_env_source,
         notebook_path: resolved_path,
+        connection_file: None,
     });
 
     let response = if let Some(ref mut prx) = progress_rx {
@@ -2214,7 +2224,7 @@ async fn ensure_kernel_started(
         let st = state.lock().await;
         st.runtime.clone()
     };
-    start_kernel(state, &runtime, "auto", None).await
+    start_kernel(state, &runtime, "auto", None, None).await
 }
 
 /// Resolve blob server URL and store path from daemon info.

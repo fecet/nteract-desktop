@@ -390,11 +390,17 @@ pub(crate) fn build_launched_config(
     notebook_path: Option<&std::path::Path>,
     feature_flags: notebook_protocol::protocol::FeatureFlags,
     captured_env: Option<&CapturedEnv>,
+    connection_file: Option<&std::path::Path>,
 ) -> LaunchedEnvConfig {
     let mut config = LaunchedEnvConfig {
         feature_flags,
         ..LaunchedEnvConfig::default()
     };
+
+    if env_source == "external" {
+        config.connection_file = connection_file.map(|p| p.to_path_buf());
+        return config;
+    }
 
     match env_source {
         "uv:inline" | "uv:pep723" => {
@@ -1937,6 +1943,10 @@ pub async fn handle_notebook_sync_connection<R, W>(
     // True if this is a newly-created notebook at a non-existent path.
     // Used to enable auto-launch for notebooks created via `runt notebook newfile.ipynb`.
     created_new_at_path: bool,
+    // When Some, the caller owns a pre-running Jupyter kernel described by
+    // this connection file. The daemon skips auto-launch and instead
+    // dispatches a LaunchKernel(env_source="external") to attach.
+    attach_connection_file: Option<String>,
 ) -> anyhow::Result<()>
 where
     R: AsyncRead + Unpin,
@@ -2032,7 +2042,9 @@ where
             trust_state.status.clone()
         };
         let has_kernel = room.has_kernel().await;
+        let client_attaches_external = attach_connection_file.is_some();
         let should_auto_launch = !has_kernel
+            && !client_attaches_external
             && matches!(
                 trust_status,
                 runt_trust::TrustStatus::Trusted | runt_trust::TrustStatus::NoDependencies
@@ -2042,7 +2054,45 @@ where
             // For newly-created notebooks at a path: also safe to auto-launch
             && (path_snapshot.as_ref().is_some_and(|p| p.exists()) || is_new_notebook || created_new_at_path);
 
-        if should_auto_launch {
+        if client_attaches_external && !has_kernel {
+            // Client supplied a connection file — dispatch a LaunchKernel
+            // request with env_source="external" instead of auto-launching.
+            // launch_kernel::handle manages kernel_status itself (sets
+            // "starting", transitions to "idle" on success), so we don't
+            // pre-set it here.
+            let cf = attach_connection_file.clone();
+            info!(
+                "[notebook-sync] Attaching external kernel for notebook {} (connection_file={:?})",
+                notebook_id, cf
+            );
+            let room_clone = room.clone();
+            let daemon_clone = daemon.clone();
+            let notebook_id_clone = notebook_id.clone();
+            let nb_path = path_snapshot
+                .as_ref()
+                .map(|p| p.to_string_lossy().into_owned());
+            spawn_supervised(
+                "attach-external-kernel",
+                async move {
+                    let resp = crate::requests::launch_kernel::handle(
+                        &room_clone,
+                        &daemon_clone,
+                        "python".to_string(),
+                        "external".to_string(),
+                        nb_path,
+                        cf,
+                    )
+                    .await;
+                    if let crate::protocol::NotebookResponse::Error { error, .. } = resp {
+                        warn!(
+                            "[notebook-sync] External attach failed for {}: {}",
+                            notebook_id_clone, error
+                        );
+                    }
+                },
+                |_| {},
+            );
+        } else if should_auto_launch {
             info!(
                 "[notebook-sync] Auto-launching kernel for notebook {} (trust: {:?}, new: {})",
                 notebook_id, trust_status, is_new_notebook
@@ -5441,6 +5491,7 @@ async fn auto_launch_kernel(
         notebook_path_opt.as_deref(),
         feature_flags,
         captured_for_config,
+        None,
     );
 
     // Transition to "launching" phase before starting the kernel process
@@ -5668,6 +5719,7 @@ async fn handle_notebook_request(
             kernel_type,
             env_source,
             notebook_path,
+            connection_file,
         } => {
             crate::requests::launch_kernel::handle(
                 room,
@@ -5675,6 +5727,7 @@ async fn handle_notebook_request(
                 kernel_type,
                 env_source,
                 notebook_path,
+                connection_file,
             )
             .await
         }
@@ -11523,6 +11576,7 @@ mod tests {
             launch_id: Some("abc".to_string()),
             feature_flags: notebook_protocol::protocol::FeatureFlags::default(),
             prewarmed_packages: vec![],
+            connection_file: None,
         };
         let snapshot = snapshot_with_uv(vec!["numpy".to_string(), "pandas".to_string()]);
         assert!(
@@ -11549,6 +11603,7 @@ mod tests {
             launch_id: None,
             feature_flags: notebook_protocol::protocol::FeatureFlags::default(),
             prewarmed_packages: vec![],
+            connection_file: None,
         };
         let snapshot = snapshot_with_uv(vec!["numpy".to_string(), "requests".to_string()]);
         let diff = compute_env_sync_diff(&launched, &snapshot).expect("should detect drift");
@@ -11575,6 +11630,7 @@ mod tests {
             launch_id: None,
             feature_flags: notebook_protocol::protocol::FeatureFlags::default(),
             prewarmed_packages: vec![],
+            connection_file: None,
         };
         let snapshot = snapshot_with_uv(vec!["numpy".to_string()]);
         let diff = compute_env_sync_diff(&launched, &snapshot).expect("should detect drift");
@@ -11600,6 +11656,7 @@ mod tests {
             launch_id: None,
             feature_flags: notebook_protocol::protocol::FeatureFlags::default(),
             prewarmed_packages: vec![],
+            connection_file: None,
         };
         let snapshot = snapshot_with_uv(vec!["numpy".to_string(), "new-pkg".to_string()]);
         let diff = compute_env_sync_diff(&launched, &snapshot).expect("should detect drift");
@@ -11625,6 +11682,7 @@ mod tests {
             launch_id: None,
             feature_flags: notebook_protocol::protocol::FeatureFlags::default(),
             prewarmed_packages: vec![],
+            connection_file: None,
         };
         // Build a conda snapshot with a different channel
         let mut snapshot = snapshot_with_conda(vec!["scipy".to_string()]);
@@ -11661,6 +11719,7 @@ mod tests {
             None,
             notebook_protocol::protocol::FeatureFlags::default(),
             None,
+            None,
         );
         assert_eq!(config.venv_path.as_ref(), Some(&venv));
         assert_eq!(config.python_path.as_ref(), Some(&python));
@@ -11693,6 +11752,7 @@ mod tests {
             None,
             notebook_protocol::protocol::FeatureFlags::default(),
             Some(&captured),
+            None,
         );
         assert_eq!(
             config.uv_deps.as_deref(),
@@ -11725,6 +11785,7 @@ mod tests {
             None,
             notebook_protocol::protocol::FeatureFlags::default(),
             Some(&captured),
+            None,
         );
         assert_eq!(
             config.conda_deps.as_deref(),
@@ -11769,6 +11830,7 @@ mod tests {
             None,
             None,
             notebook_protocol::protocol::FeatureFlags::default(),
+            None,
             None,
         );
         assert_eq!(config.venv_path.as_ref(), Some(&venv));

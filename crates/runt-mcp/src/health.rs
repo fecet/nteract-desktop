@@ -266,6 +266,7 @@ async fn auto_rejoin_session(
                 socket_path.to_path_buf(),
                 PathBuf::from(path),
                 &label,
+                None,
             )
             .await
             .map(|r| (r.handle, r.broadcast_rx, r.cells.len(), r.info.notebook_id))

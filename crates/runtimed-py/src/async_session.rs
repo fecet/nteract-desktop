@@ -62,11 +62,17 @@ impl AsyncSession {
         socket_path: PathBuf,
         path: String,
         peer_label: Option<String>,
+        attach_connection_file: Option<String>,
     ) -> PyResult<Self> {
         let peer_label = Some(peer_label.unwrap_or_else(session_core::default_peer_label));
         let actor_label = peer_label.as_deref().map(session_core::make_actor_label);
-        let (notebook_id, mut state, _info) =
-            session_core::connect_open(socket_path, &path, actor_label.as_deref()).await?;
+        let (notebook_id, mut state, _info) = session_core::connect_open(
+            socket_path,
+            &path,
+            actor_label.as_deref(),
+            attach_connection_file,
+        )
+        .await?;
         state.peer_label = peer_label.clone();
         session_core::announce_presence(&state).await;
         Ok(Self::from_state(notebook_id, state, peer_label))
@@ -77,6 +83,7 @@ impl AsyncSession {
         socket_path: PathBuf,
         runtime: String,
         working_dir: Option<PathBuf>,
+        notebook_id: Option<String>,
         peer_label: Option<String>,
     ) -> PyResult<Self> {
         let peer_label = Some(peer_label.unwrap_or_else(session_core::default_peer_label));
@@ -85,6 +92,7 @@ impl AsyncSession {
             socket_path,
             &runtime,
             working_dir,
+            notebook_id,
             actor_label.as_deref(),
         )
         .await?;
@@ -237,25 +245,42 @@ impl AsyncSession {
     ///     kernel_type: Type of kernel to start (default: "python").
     ///     env_source: Environment source (default: "auto").
     ///     notebook_path: Optional path for project file detection.
-    #[pyo3(signature = (kernel_type="python", env_source="auto", notebook_path=None))]
+    ///     connection_file: Optional path to an externally-managed Jupyter
+    ///         connection file. Required when env_source == "external"; the
+    ///         daemon attaches to the pre-running kernel described by this
+    ///         file instead of spawning one.
+    #[pyo3(signature = (
+        kernel_type="python",
+        env_source="auto",
+        notebook_path=None,
+        connection_file=None,
+    ))]
     fn start_kernel<'py>(
         &self,
         py: Python<'py>,
         kernel_type: &str,
         env_source: &str,
         notebook_path: Option<&str>,
+        connection_file: Option<&str>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let state = Arc::clone(&self.state);
         let notebook_id = self.notebook_id.clone();
         let kernel_type = kernel_type.to_string();
         let env_source = env_source.to_string();
         let notebook_path = notebook_path.map(|s| s.to_string());
+        let connection_file = connection_file.map(|s| s.to_string());
 
         future_into_py(py, async move {
             // Ensure connected first
             session_core::connect(&state, &notebook_id).await?;
-            session_core::start_kernel(&state, &kernel_type, &env_source, notebook_path.as_deref())
-                .await
+            session_core::start_kernel(
+                &state,
+                &kernel_type,
+                &env_source,
+                notebook_path.as_deref(),
+                connection_file.as_deref(),
+            )
+            .await
         })
     }
 

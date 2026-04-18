@@ -264,6 +264,7 @@ pub async fn connect_open(
     socket_path: PathBuf,
     path: PathBuf,
     actor_label: &str,
+    attach_connection_file: Option<String>,
 ) -> Result<OpenResult, SyncError> {
     let stream = connect_stream!(&socket_path);
     let (reader, writer) = tokio::io::split(stream);
@@ -276,6 +277,7 @@ pub async fn connect_open(
     // Send open handshake
     let handshake = Handshake::OpenNotebook {
         path: path.to_string_lossy().to_string(),
+        attach_connection_file,
     };
     connection::send_json_frame(&mut writer, &handshake)
         .await
@@ -348,6 +350,7 @@ pub async fn connect_create(
     socket_path: PathBuf,
     runtime: &str,
     working_dir: Option<PathBuf>,
+    notebook_id: Option<String>,
     actor_label: &str,
     ephemeral: bool,
 ) -> Result<CreateResult, SyncError> {
@@ -355,7 +358,7 @@ pub async fn connect_create(
         socket_path,
         runtime,
         working_dir,
-        None,
+        notebook_id,
         actor_label,
         ephemeral,
     )
@@ -625,6 +628,7 @@ pub async fn connect_open_relay(
     // Send open handshake
     let handshake = Handshake::OpenNotebook {
         path: path.to_string_lossy().to_string(),
+        attach_connection_file: None,
     };
     connection::send_json_frame(&mut writer, &handshake)
         .await

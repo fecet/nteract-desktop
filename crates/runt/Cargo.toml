@@ -23,6 +23,8 @@ jupyter-protocol = { workspace = true }
 runtimelib = { workspace = true, features = ["tokio-runtime", "aws-lc-rs"] }
 runtimed-client = { path = "../runtimed-client" }
 notebook-doc = { path = "../notebook-doc", features = ["persistence"] }
+notebook-sync = { path = "../notebook-sync" }
+notebook-protocol = { path = "../notebook-protocol" }
 runt-workspace = { path = "../runt-workspace" }
 runt-mcp = { path = "../runt-mcp" }
 kernel-env = { path = "../kernel-env" }

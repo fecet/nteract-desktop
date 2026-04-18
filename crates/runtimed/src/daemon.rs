@@ -1678,11 +1678,18 @@ impl Daemon {
                     false, // Send ProtocolCapabilities for legacy NotebookSync handshake
                     None,  // No streaming load for legacy handshake
                     false, // Not a newly-created notebook at path
+                    None,  // Legacy handshake has no attach-connection-file hint
                 )
                 .await
             }
             Handshake::Blob => self.handle_blob_connection(stream).await,
-            Handshake::OpenNotebook { path } => self.handle_open_notebook(stream, path).await,
+            Handshake::OpenNotebook {
+                path,
+                attach_connection_file,
+            } => {
+                self.handle_open_notebook(stream, path, attach_connection_file)
+                    .await
+            }
             Handshake::CreateNotebook {
                 runtime,
                 working_dir,
@@ -1738,7 +1745,12 @@ impl Daemon {
     /// Daemon loads the .ipynb file, derives notebook_id, creates room, populates doc.
     /// If the file doesn't exist, creates a new empty notebook at that path.
     /// Returns NotebookConnectionInfo, then continues as normal notebook sync.
-    async fn handle_open_notebook<S>(self: Arc<Self>, stream: S, path: String) -> anyhow::Result<()>
+    async fn handle_open_notebook<S>(
+        self: Arc<Self>,
+        stream: S,
+        path: String,
+        attach_connection_file: Option<String>,
+    ) -> anyhow::Result<()>
     where
         S: AsyncRead + AsyncWrite + Unpin,
     {
@@ -2048,6 +2060,7 @@ impl Daemon {
             true, // Skip ProtocolCapabilities - already sent in NotebookConnectionInfo
             needs_load,
             created_new_at_path, // Enable auto-launch for notebooks created at non-existent paths
+            attach_connection_file,
         )
         .await
     }
@@ -2196,6 +2209,7 @@ impl Daemon {
             true,  // Skip ProtocolCapabilities - already sent in NotebookConnectionInfo
             None,  // No streaming load - doc was just created with empty cell
             false, // UUID-based new notebook, handled by is_new_notebook check
+            None,  // CreateNotebook handshake has no attach-connection-file hint
         )
         .await
     }

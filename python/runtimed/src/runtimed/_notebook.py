@@ -100,15 +100,22 @@ class Notebook:
         runtime: str = "python",
         env_source: str = "auto",
         notebook_path: str | None = None,
+        connection_file: str | None = None,
     ) -> None:
         """Start a runtime for this notebook.
 
         Args:
             runtime: Runtime type (e.g. "python", "deno").
-            env_source: Environment source (e.g. "auto", "uv:inline").
+            env_source: Environment source (e.g. "auto", "uv:inline", "external").
             notebook_path: Optional path for project file detection.
+            connection_file: Optional path to an externally-managed Jupyter
+                connection file. Required when env_source == "external";
+                the daemon attaches to the pre-running kernel described by
+                this file instead of spawning one.
         """
-        await self._session.start_kernel(runtime, env_source, notebook_path)
+        await self._session.start_kernel(
+            runtime, env_source, notebook_path, connection_file
+        )
 
     async def stop_runtime(self) -> None:
         """Shut down the kernel. The notebook session stays connected."""

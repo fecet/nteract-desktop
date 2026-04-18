@@ -315,6 +315,7 @@ pub async fn add_dependency(
                     kernel_type: "python".to_string(),
                     env_source: restart_env_source,
                     notebook_path,
+                    connection_file: None,
                 })
                 .await
             {

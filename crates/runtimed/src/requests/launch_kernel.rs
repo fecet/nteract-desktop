@@ -30,7 +30,9 @@ pub(crate) async fn handle(
     kernel_type: String,
     env_source: String,
     notebook_path: Option<String>,
+    connection_file: Option<String>,
 ) -> NotebookResponse {
+    let connection_file_path = connection_file.as_deref().map(std::path::Path::new);
     // Fall back to the room's on-disk path when the caller doesn't
     // supply one. The frontend typically launches with
     // `notebook_path: None` and relies on the room knowing its own
@@ -1061,6 +1063,7 @@ pub(crate) async fn handle(
         notebook_path.as_deref(),
         feature_flags,
         captured_env_for_config.as_ref(),
+        connection_file_path,
     );
 
     // Transition to "launching" phase before starting the kernel process

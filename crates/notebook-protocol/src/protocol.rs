@@ -48,6 +48,12 @@ pub struct LaunchedEnvConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pixi_deps: Option<Vec<String>>,
 
+    /// Path to an externally-managed Jupyter connection file.
+    /// When `env_source == "external"`, the daemon reads this file and
+    /// attaches to the pre-running kernel instead of spawning one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub connection_file: Option<PathBuf>,
+
     /// Pixi project deps snapshot for drift detection (pixi:toml only).
     /// Combined sorted list of conda + pypi dependency names from pixi.toml.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -267,10 +273,16 @@ pub enum NotebookRequest {
     LaunchKernel {
         /// Kernel type: "python" or "deno"
         kernel_type: String,
-        /// Environment source: "uv:inline", "conda:prewarmed", etc.
+        /// Environment source: "uv:inline", "conda:prewarmed", "external", etc.
         env_source: String,
         /// Path to the notebook file (for working directory)
         notebook_path: Option<String>,
+        /// Path to an externally-managed Jupyter connection file.
+        /// Required when `env_source == "external"`. The daemon will attach
+        /// to the pre-running kernel described by this file rather than
+        /// spawning its own kernel process.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        connection_file: Option<String>,
     },
 
     /// Execute a cell by reading its source from the automerge doc.
