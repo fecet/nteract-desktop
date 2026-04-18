@@ -1457,72 +1457,33 @@ async fn run_upgrade(
     Ok(())
 }
 
-/// Ensure the daemon is running using Tauri's sidecar API.
+/// Ensure the daemon is reachable.
 ///
-/// This replaces the old `ensure_daemon_running` flow that used ServiceManager directly.
-/// The new flow:
-/// 1. Ping to check if daemon is running
-/// 2. If not, spawn `runtimed install` via sidecar (which also starts it)
-/// 3. Wait for daemon to become ready
-/// 4. Emit progress events throughout
+/// mirari-patches: the desktop app no longer owns the daemon's lifecycle.
+/// It pings; if the daemon is up, it is used as-is (regardless of version
+/// alignment); if it is down, we fail with guidance so the outer runtime
+/// (mirari LSP, `runt daemon start`, systemd, etc.) can install/start it.
+///
+/// This removes two upstream behaviors that clobbered a fork-built daemon
+/// on every GUI launch:
+///   - sidecar-driven `runtimed install` when no daemon was running, which
+///     copied the bundled binary into ~/.local/share/runt/bin/;
+///   - a commit-hash comparison that triggered `upgrade_daemon_via_sidecar`
+///     whenever the running daemon differed from the bundle.
 async fn ensure_daemon_via_sidecar<F>(
-    app: &tauri::AppHandle,
+    _app: &tauri::AppHandle,
     on_progress: F,
 ) -> Result<String, String>
 where
     F: Fn(runtimed::client::DaemonProgress) + Clone + Send + 'static,
 {
     use runtimed::client::{DaemonProgress, PoolClient};
-    use tauri_plugin_shell::{process::CommandEvent, ShellExt};
 
-    let bundled_version = bundled_daemon_version();
-    log::info!(
-        "[startup] Checking if daemon is running... (bundled={})",
-        bundled_version
-    );
+    log::info!("[startup] Checking if daemon is running...");
     on_progress(DaemonProgress::Checking);
 
-    // Check if daemon is already running
     let client = PoolClient::default();
-    if let Ok(()) = client.ping().await {
-        // Daemon is running - check version alignment (production only).
-        // `query_daemon_info` is socket-first with a `daemon.json`
-        // fallback for the one-release compat window.
-        if !runt_workspace::is_dev_mode() {
-            let running_version = runtimed_client::singleton::query_daemon_info(
-                runt_workspace::default_socket_path(),
-            )
-            .await
-            .map(|i| i.version);
-            if let Some(version) = running_version {
-                // Compare commit hashes only - CI appends "+{git_sha}" to the version
-                // at build time, so commit hash is the precise compatibility check.
-                let running_commit = extract_commit_hash(&version);
-                let bundled_commit = extract_commit_hash(&bundled_version);
-
-                if running_commit != bundled_commit {
-                    log::info!(
-                        "[startup] Daemon commit mismatch — will upgrade: running={}, bundled={}",
-                        version,
-                        bundled_version
-                    );
-                    // Upgrade daemon to match bundled version
-                    return upgrade_daemon_via_sidecar(app, on_progress).await;
-                }
-                log::info!(
-                    "[startup] Daemon version aligned: running={}, bundled={}",
-                    version,
-                    bundled_version
-                );
-            } else {
-                log::warn!(
-                    "[startup] Daemon responded to ping but version unavailable via \
-                     socket or daemon.json (bundled={})",
-                    bundled_version
-                );
-            }
-        }
-
+    if client.ping().await.is_ok() {
         let endpoint = runt_workspace::default_socket_path()
             .to_string_lossy()
             .to_string();
@@ -1533,112 +1494,19 @@ where
         return Ok(endpoint);
     }
 
-    // In dev mode, don't auto-install - user should run dev-daemon manually
-    if runt_workspace::is_dev_mode() {
-        log::info!("[startup] Dev mode: daemon not running, skipping auto-install");
-        let guidance = "Start it with: cargo xtask dev-daemon".to_string();
-        on_progress(DaemonProgress::Failed {
-            error: "Dev daemon not running".to_string(),
-            guidance: guidance.clone(),
-        });
-        return Err(format!(
-            "Dev daemon not running at {:?}. {}",
-            runt_workspace::default_socket_path(),
-            guidance
-        ));
-    }
-
-    // Daemon not running - spawn sidecar to install and start
-    log::info!("[startup] Daemon not responding, spawning runtimed install via sidecar...");
-    on_progress(DaemonProgress::Installing);
-
-    // Note: Use just the binary name (not the path) for sidecar
-    let sidecar_result = app
-        .shell()
-        .sidecar("runtimed")
-        .map_err(|e| format!("Failed to create sidecar command: {}", e))?
-        .args(["install"])
-        .spawn();
-
-    let (mut rx, _child) = sidecar_result.map_err(|e| format!("Failed to spawn sidecar: {}", e))?;
-
-    // Collect output for logging
-    let mut exit_code = None;
-    while let Some(event) = rx.recv().await {
-        match event {
-            CommandEvent::Stdout(line) => {
-                let line_str = String::from_utf8_lossy(&line);
-                log::info!("[runtimed install] {}", line_str.trim());
-            }
-            CommandEvent::Stderr(line) => {
-                let line_str = String::from_utf8_lossy(&line);
-                log::warn!("[runtimed install] {}", line_str.trim());
-            }
-            CommandEvent::Terminated(status) => {
-                exit_code = status.code;
-            }
-            _ => {}
-        }
-    }
-
-    // Check exit code
-    if exit_code != Some(0) {
-        let error = format!(
-            "{} install failed with code {:?}",
-            runt_workspace::daemon_binary_basename(),
-            exit_code
-        );
-        log::error!("[startup] {}", error);
-        on_progress(DaemonProgress::Failed {
-            error: error.clone(),
-            guidance: format!(
-                "Try running: {} install",
-                runt_workspace::daemon_binary_basename()
-            ),
-        });
-        return Err(error);
-    }
-
-    log::info!("[startup] runtimed install completed, waiting for daemon to be ready...");
-    on_progress(DaemonProgress::Starting);
-
-    // Wait for daemon to become ready (up to 10 seconds)
-    let max_attempts = 20;
-    for attempt in 1..=max_attempts {
-        on_progress(DaemonProgress::WaitingForReady {
-            attempt,
-            max_attempts,
-        });
-
-        if client.ping().await.is_ok() {
-            let endpoint = runt_workspace::default_socket_path()
-                .to_string_lossy()
-                .to_string();
-            log::info!(
-                "[startup] Daemon ready at {} (attempt {})",
-                endpoint,
-                attempt
-            );
-            on_progress(DaemonProgress::Ready {
-                endpoint: endpoint.clone(),
-            });
-            return Ok(endpoint);
-        }
-
-        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-    }
-
-    // Timed out
-    let error = "Daemon did not become ready within timeout".to_string();
-    log::error!("[startup] {}", error);
+    let socket_path = runt_workspace::default_socket_path();
+    let guidance = format!(
+        "Start the daemon first, e.g. `{} daemon start` or through your LSP \
+         integration. The desktop app no longer installs a daemon itself.",
+        runt_workspace::cli_command_name()
+    );
+    let error = format!("Daemon not running at {}", socket_path.display());
+    log::error!("[startup] {}: {}", error, guidance);
     on_progress(DaemonProgress::Failed {
         error: error.clone(),
-        guidance: format!(
-            "Check daemon logs: {} daemon logs",
-            runt_workspace::cli_command_name()
-        ),
+        guidance: guidance.clone(),
     });
-    Err(error)
+    Err(format!("{}. {}", error, guidance))
 }
 
 /// Get git information for the debug banner.
